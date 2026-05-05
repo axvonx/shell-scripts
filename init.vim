@@ -874,6 +874,14 @@ function M.live_grep_project()
   })
 end
 
+vim.keymap.set('n', 'fr', function()
+  local toplevel = vim.fn.systemlist('git rev-parse --show-toplevel')[1]
+  if toplevel == '' or toplevel == nil then
+    toplevel = vim.fn.getcwd()
+  end
+  require('telescope.builtin').find_files({ cwd = toplevel })
+end, { noremap = true, silent = true })
+
 vim.keymap.set('v', '<leader>fg', M.live_grep_project, { noremap = true, silent = true, desc = "Live grep (visual selection)" })
 vim.keymap.set('n', '<leader>fg', M.live_grep_project, { noremap = true, silent = true, desc = "Live grep project" })
 vim.keymap.set('n', '<C-h>', '<C-w>h', { desc = "Move to left window" })
@@ -971,10 +979,6 @@ nnoremap <leader>n :NERDTreeFocus<CR>
 nnoremap <leader>e <Cmd>exe v:count1 . "ToggleTerm"<CR>
 nnoremap <F5> :let _s=@/<Bar>:%s/\s\+$//e<Bar>:let @/=_s<Bar><CR>
 
-nnoremap <leader>fd <cmd>lua require('telescope.builtin').find_files({
-            \ cwd = vim.fn.systemlist("git rev-parse --show-toplevel")[1]
-            \ })<cr>
-
 nnoremap <leader>fb <cmd>lua require('telescope.builtin').buffers({
             \ cwd = vim.fn.systemlist("git rev-parse --show-toplevel")[1]
             \ })<cr>
@@ -1039,7 +1043,6 @@ command! Wq wq
 command! WQ wq
 command! W w
 command! Q q
-
 
 "
 "let g:neoformat_verilog_verible = {
