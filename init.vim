@@ -1,3 +1,31 @@
+" ╔═══════════════════════════════════════════════════════════════════════════╗
+" ║  init.vim — table of contents.  Jump with:  /SECTION: <name>               ║
+" ╟───────────────────────────────────────────────────────────────────────────╢
+" ║  Plugins ............ vim-plug plugin list                                 ║
+" ║  Early setup ........ airline boot, filetype, mapleader                    ║
+" ║  Copilot ............ copilot.lua + suggestion keymaps                     ║
+" ║  Completion ......... nvim-cmp mappings                                    ║
+" ║  Todo-comments                                                             ║
+" ║  Treesitter                                                                ║
+" ║  Aerial ............. symbols outline                                      ║
+" ║  Colorscheme ........ cyberdream setup (transparent)                       ║
+" ║  LSP ................ lsp servers + cmp/lsp glue                           ║
+" ║  Which-key .......... group/label registrations                           ║
+" ║  Gitsigns                                                                  ║
+" ║  Telescope .......... pickers (setup in lua block)                         ║
+" ║  Bufferline ......... the tab bar + drag-order persistence                 ║
+" ║  Session ............ persistence.nvim (per-dir restore)                   ║
+" ║  Editing ............ comment / flash / autopairs / indent / surround      ║
+" ║  Trouble ............ diagnostics/quickfix panel                           ║
+" ║  Build .............. cmake-tools (primary) + overseer (ad-hoc)            ║
+" ║  Vimscript fns ...... comment-block converter, airline helpers             ║
+" ║  NERDTree                                                                  ║
+" ║  Telescope keymaps                                                         ║
+" ║  Airline ............ statusline config                                    ║
+" ║  Editor options ..... set … (tabs, undo, numbers, shada)                   ║
+" ╚═══════════════════════════════════════════════════════════════════════════╝
+
+" ═══════════════════════════ SECTION: Plugins ═══════════════════════════
 call plug#begin('~/.local/share/nvim/plugged')
 
 Plug 'nvim-telescope/telescope-frecency.nvim'
@@ -23,7 +51,6 @@ Plug 'hrsh7th/cmp-buffer'
 Plug 'hrsh7th/cmp-path'
 Plug 'hrsh7th/cmp-cmdline'
 Plug 'preservim/nerdtree'
-Plug 'akinsho/toggleterm.nvim', {'tag' : '*'}
 Plug 'navarasu/onedark.nvim'
 Plug 'scottmckendry/cyberdream.nvim'
 Plug 'sbdchd/neoformat'
@@ -48,9 +75,12 @@ Plug 'windwp/nvim-autopairs'
 Plug 'lukas-reineke/indent-blankline.nvim'
 Plug 'kylechui/nvim-surround', { 'tag': '*' }
 Plug 'folke/trouble.nvim'
+Plug 'stevearc/overseer.nvim'
+Plug 'Civitasv/cmake-tools.nvim'
 
 call plug#end()
 
+" ═══════════════════════════ SECTION: Early setup ═══════════════════════════
 autocmd VimEnter * ++once call s:EnableAirlineAfterStartup()
 function! s:EnableAirlineAfterStartup()
   set laststatus=2
@@ -62,6 +92,7 @@ autocmd BufNewFile,BufRead *.sh set filetype=sh
 let mapleader = " "
 
 lua << EOF
+-- ═══════════════════════════ SECTION: Copilot ═══════════════════════════
 local copilot = require("copilot")
 
 copilot.setup({
@@ -172,6 +203,7 @@ vim.api.nvim_create_autocmd({ "InsertEnter", "CursorMovedI", "TextChangedI" }, {
   end,
 })
 
+-- ═══════════════════════════ SECTION: Todo-comments ═══════════════════════════
 require("todo-comments").setup {
   signs = true,
   keywords = {
@@ -201,6 +233,7 @@ function _G.CopilotStatus()
   end
 end
 
+-- ═══════════════════════════ SECTION: Treesitter ═══════════════════════════
 require('nvim-treesitter').setup {
   ensure_installed = { "rust", "c", "gleam", "cpp", "markdown", "haskell", "python", "js" },
   highlight = {
@@ -219,6 +252,7 @@ vim.api.nvim_create_autocmd("BufReadPost", {
   end,
 })
 
+-- ═══════════════════════════ SECTION: Aerial (symbols) ═══════════════════════════
 require('aerial').setup({
   filter_kind = false,
   layout = {
@@ -253,10 +287,12 @@ require('aerial').setup({
 vim.keymap.set('n', '<leader>aa', '<cmd>AerialToggle! right<CR>', { desc = "Toggle symbols outline" })
 vim.keymap.set('n', '<leader>as', '<cmd>Telescope aerial<CR>', { desc = "Search symbols (Telescope)" })
 
+-- ═══════════════════════════ SECTION: Colorscheme (cyberdream) ═══════════════════════════
 require("cyberdream").setup({
     transparent = true,
 })
 
+-- ═══════════════════════════ SECTION: LSP (servers + completion glue) ═══════════════════════════
 local cmp = require('cmp')
 local cmp_lsp = require('cmp_nvim_lsp')
 
@@ -292,8 +328,6 @@ vim.api.nvim_create_autocmd({"TextChanged", "TextChangedI"}, {
         vim.diagnostic.setloclist({open=false})
     end
 })
-
-require'toggleterm'.setup()
 
 vim.lsp.config.bashls = {
   cmd = { 'bash-language-server', 'start' },
@@ -416,6 +450,7 @@ function toggle_lsp()
     lsp_active = false
 end
 
+-- ═══════════════════════════ SECTION: Which-key ═══════════════════════════
 local wk = require('which-key')
 wk.setup({ delay = 400, win = { border = "rounded" } })
 
@@ -435,11 +470,13 @@ wk.add({
   { "<leader>t", group = "toggles" },
   { "<leader>q", group = "session" },
   { "<leader>x", group = "trouble/diagnostics" },
+  { "<leader>o", group = "overseer/tasks" },
+  { "<leader>c", group = "cmake" },
+  { "<leader>b", desc = "CMake build" },
   { "<leader>?", desc = "Show all keybinds" },
   { "<leader>g", desc = "NERDTree: find current file" },
   { "<leader>G", desc = "NERDTree: toggle" },
   { "<leader>n", desc = "NERDTree: focus" },
-  { "<leader>e", desc = "Toggle terminal" },
   { "<leader>d", desc = "Toggle Copilot" },
   { "<leader>[", desc = "Previous buffer" },
   { "<leader>]", desc = "Next buffer" },
@@ -450,6 +487,7 @@ wk.add({
   { "<F5>", desc = "Strip trailing whitespace" },
 })
 
+-- ═══════════════════════════ SECTION: Gitsigns ═══════════════════════════
 require('gitsigns').setup{
   on_attach = function(bufnr)
     local gitsigns = require('gitsigns')
@@ -915,6 +953,7 @@ vim.keymap.set('n', '<C-x>', ':bdelete<CR>', { noremap = true, silent = true, de
 vim.keymap.set('n', '<leader>[', ':bprev<CR>', { desc = "Previous buffer" })
 vim.keymap.set('n', '<leader>]', ':bnext<CR>', { desc = "Next buffer" })
 
+-- ═══════════════════════════ SECTION: Bufferline (tabs) ═══════════════════════════
 -- Bufferline: a reorderable tabline (airline's tabline is disabled below).
 -- ---- persist the drag-order of buffers across restarts, per directory ----
 local bl_order_file = vim.fn.stdpath("state") .. "/bufferline_order.json"
@@ -1007,6 +1046,7 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 vim.keymap.set('n', '<leader><Left>',  ':BufferLineMovePrev<CR>', { silent = true, desc = "Move buffer left in tabline" })
 vim.keymap.set('n', '<leader><Right>', ':BufferLineMoveNext<CR>', { silent = true, desc = "Move buffer right in tabline" })
 
+-- ═══════════════════════════ SECTION: Session ═══════════════════════════
 -- Session persistence (per directory): remember open buffers/tabs/window layout.
 -- What gets saved in a session — buffers, cwd, tabpages, window sizes, etc.
 vim.o.sessionoptions = "buffers,curdir,folds,globals,help,tabpages,terminal,winsize,winpos"
@@ -1035,6 +1075,7 @@ vim.keymap.set('n', '<leader>qs', function() require('persistence').load() end, 
 vim.keymap.set('n', '<leader>ql', function() require('persistence').load({ last = true }) end, { desc = "Restore last session" })
 vim.keymap.set('n', '<leader>qd', function() require('persistence').stop() end, { desc = "Stop saving session" })
 
+-- ═══════════════════════════ SECTION: Editing (comment/flash/pairs/indent/surround) ═══════════════════════════
 -- Comment.nvim: treesitter-aware comment toggling (gcc line, gc motion/visual).
 require('Comment').setup()
 
@@ -1063,11 +1104,59 @@ require('ibl').setup {
 -- nvim-surround: add/change/delete surrounds (ys/cs/ds, visual S).
 require('nvim-surround').setup {}
 
+-- ═══════════════════════════ SECTION: Trouble ═══════════════════════════
 -- trouble.nvim: aggregated diagnostics/quickfix panel (complements inline LSP).
 require('trouble').setup {}
 vim.keymap.set('n', '<leader>xx', '<cmd>Trouble diagnostics toggle<cr>',              { desc = "Diagnostics (Trouble)" })
 vim.keymap.set('n', '<leader>xX', '<cmd>Trouble diagnostics toggle filter.buf=0<cr>', { desc = "Buffer diagnostics (Trouble)" })
 vim.keymap.set('n', '<leader>xq', '<cmd>Trouble qflist toggle<cr>',                    { desc = "Quickfix list (Trouble)" })
+
+-- cmake-tools.nvim: CMake-aware build/run for this project. Knows the out-of-source
+-- build dir natively (no Makefile-detection hacks), and sends build output to the
+-- quickfix list (browse with <leader>xq / Trouble). <leader>c = CMake commands.
+-- ═══════════════════════════ SECTION: Build (cmake-tools + overseer) ═══════════════════════════
+-- cmake-tools takes its CMake source root from nvim's cwd, and re-derives it on
+-- every DirChanged — so cd-ing away (e.g. back into build/) resets it and breaks
+-- generate. The stable fix: make the cwd BE the source root and leave it there.
+-- Walk UP for CMakeLists.txt and cd there once, BEFORE setup (so cmake-tools' own
+-- DirChanged handler, registered during setup, never sees a conflicting change).
+-- Only acts inside a CMake tree; elsewhere cwd is untouched. No hardcoded paths.
+local cmake_found = vim.fs.find("CMakeLists.txt", { upward = true, type = "file", path = vim.loop.cwd() })[1]
+if cmake_found then vim.cmd.cd(vim.fs.dirname(cmake_found)) end
+require('cmake-tools').setup {
+  cmake_build_directory = "build",              -- joined onto the source-root cwd
+  cmake_executor = {                            -- build errors → quickfix (async)
+    name = "quickfix",
+    -- only_on_error: don't flash the quickfix open/closed on a clean rebuild;
+    -- it appears only when there's actually something to show.
+    opts = { show = "only_on_error", position = "belowright", size = 12 },
+  },
+  cmake_runner = { name = "terminal" },         -- run built targets in a terminal
+}
+-- Build, then echo a tiny unintrusive success line at the bottom (failures show
+-- up as the quickfix opening, per only_on_error above).
+local function cmake_build()
+  require('cmake-tools').build({}, function(result)
+    local ok = result and ((type(result.is_ok) == "function" and result:is_ok())
+                            or result.code == 0)
+    if ok then
+      vim.api.nvim_echo({ { "✓ Build succeeded", "DiagnosticOk" } }, false, {})
+    end
+  end)
+end
+vim.keymap.set('n', '<leader>b',  cmake_build,                        { desc = "CMake build" })
+vim.keymap.set('n', '<leader>cg', '<cmd>CMakeGenerate<cr>',          { desc = "CMake generate/configure" })
+vim.keymap.set('n', '<leader>cb', cmake_build,                        { desc = "CMake build" })
+vim.keymap.set('n', '<leader>cr', '<cmd>CMakeRun<cr>',              { desc = "CMake run" })
+vim.keymap.set('n', '<leader>cc', '<cmd>CMakeClean<cr>',            { desc = "CMake clean" })
+vim.keymap.set('n', '<leader>ct', '<cmd>CMakeSelectBuildTarget<cr>',{ desc = "CMake select build target" })
+vim.keymap.set('n', '<leader>cl', '<cmd>CMakeSelectLaunchTarget<cr>',{ desc = "CMake select launch target" })
+vim.keymap.set('n', '<leader>cv', '<cmd>CMakeSelectBuildType<cr>',  { desc = "CMake select build type" })
+
+-- overseer.nvim: kept as a bare-bones ad-hoc task runner for non-CMake odd jobs.
+require('overseer').setup {}
+vim.keymap.set('n', '<leader>or', '<cmd>OverseerRun<cr>',    { desc = "Run a task (Overseer)" })
+vim.keymap.set('n', '<leader>oo', '<cmd>OverseerToggle<cr>', { desc = "Toggle task list (Overseer)" })
 
 -- Summon the full which-key hint list for the current mode (all first keys,
 -- not just <leader>). Pressing <leader> alone already shows the leader menu.
@@ -1083,6 +1172,7 @@ return M
 
 EOF
 
+" ═══════════════════════════ SECTION: Vimscript fns ═══════════════════════════
 function! ConvertAllCommentsToBlocks() range
   let l:start = a:firstline
   let l:end = a:lastline
@@ -1148,15 +1238,16 @@ if !isdirectory(expand("~/.local/share/nvim/undo"))
   call mkdir(expand("~/.local/share/nvim/undo"), "p")
 endif
 
+" ═══════════════════════════ SECTION: NERDTree ═══════════════════════════
 let g:NERDTreeWinPos = 'right'
 let g:NERDTreeWinSize = 40
 let g:NERDTreeChDirMode = 2
 nnoremap <leader>g :NERDTreeFind<CR>
 nnoremap <leader>G :NERDTreeToggle<CR>
 nnoremap <leader>n :NERDTreeFocus<CR>
-nnoremap <leader>e <Cmd>exe v:count1 . "ToggleTerm"<CR>
 nnoremap <F5> :let _s=@/<Bar>:%s/\s\+$//e<Bar>:let @/=_s<Bar><CR>
 
+" ═══════════════════════════ SECTION: Telescope keymaps ═══════════════════════════
 nnoremap <leader>fb <cmd>lua require('telescope.builtin').buffers({
             \ cwd = vim.fn.systemlist("git rev-parse --show-toplevel")[1]
             \ })<cr>
@@ -1178,6 +1269,7 @@ autocmd BufReadPost *
      \   exe "normal! g`\"" |
      \ endif
 
+" ═══════════════════════════ SECTION: Airline ═══════════════════════════
 function! AirlineWeather()
   return luaeval('StatusWeather()')
 endfunction
@@ -1210,6 +1302,7 @@ endfunction
 
 colorscheme cyberdream
 
+" ═══════════════════════════ SECTION: Editor options ═══════════════════════════
 set undofile
 set undodir^=~/.local/share/nvim/undo//
 set laststatus=2
