@@ -1,5 +1,6 @@
 call plug#begin('~/.local/share/nvim/plugged')
 
+Plug 'nvim-telescope/telescope-frecency.nvim'
 Plug 'folke/which-key.nvim'
 Plug 'stevearc/stickybuf.nvim'
 Plug 'zbirenbaum/copilot.lua'
@@ -23,7 +24,6 @@ Plug 'hrsh7th/cmp-path'
 Plug 'hrsh7th/cmp-cmdline'
 Plug 'preservim/nerdtree'
 Plug 'akinsho/toggleterm.nvim', {'tag' : '*'}
-Plug 'tribela/transparent.nvim'
 Plug 'navarasu/onedark.nvim'
 Plug 'scottmckendry/cyberdream.nvim'
 Plug 'sbdchd/neoformat'
@@ -39,6 +39,15 @@ Plug 'mrcjkb/rustaceanvim'
 Plug 'Scysta/pink-panic.nvim'
 Plug 'rktjmp/lush.nvim'
 Plug 'folke/todo-comments.nvim'
+Plug 'nvim-tree/nvim-web-devicons'
+Plug 'akinsho/bufferline.nvim', { 'tag': '*' }
+Plug 'folke/persistence.nvim'
+Plug 'numToStr/Comment.nvim'
+Plug 'folke/flash.nvim'
+Plug 'windwp/nvim-autopairs'
+Plug 'lukas-reineke/indent-blankline.nvim'
+Plug 'kylechui/nvim-surround', { 'tag': '*' }
+Plug 'folke/trouble.nvim'
 
 call plug#end()
 
@@ -252,6 +261,13 @@ local cmp = require('cmp')
 local cmp_lsp = require('cmp_nvim_lsp')
 
 vim.lsp.config("clangd", {
+    cmd = {
+        "clangd",
+        "--clang-tidy",
+        "--background-index",
+        "--header-insertion=iwyu",
+        "--enable-config",
+    },
     capabilities = cmp_lsp.default_capabilities(),
     on_attach = function(client, bufnr)
         cmp.setup.buffer {
@@ -260,9 +276,6 @@ vim.lsp.config("clangd", {
             }
         }
     end,
-  init_options = {
-    fallbackFlags = { "--background-index" }
-  },
 })
 vim.lsp.enable({"clangd"})
 
@@ -420,6 +433,9 @@ wk.add({
   { "<leader>f", group = "find/format" },
   { "<leader>h", group = "git hunks" },
   { "<leader>t", group = "toggles" },
+  { "<leader>q", group = "session" },
+  { "<leader>x", group = "trouble/diagnostics" },
+  { "<leader>?", desc = "Show all keybinds" },
   { "<leader>g", desc = "NERDTree: find current file" },
   { "<leader>G", desc = "NERDTree: toggle" },
   { "<leader>n", desc = "NERDTree: focus" },
@@ -875,11 +891,14 @@ function M.live_grep_project()
 end
 
 vim.keymap.set('n', 'fr', function()
-  local toplevel = vim.fn.systemlist('git rev-parse --show-toplevel')[1]
-  if toplevel == '' or toplevel == nil then
-    toplevel = vim.fn.getcwd()
+  local root = vim.fn.systemlist('git rev-parse --show-toplevel')[1]
+  if not root or root == '' then
+    root = vim.fn.getcwd()
   end
-  require('telescope.builtin').find_files({ cwd = toplevel })
+  require('telescope').extensions.frecency.frecency({
+    cwd = root,
+    workspace = 'CWD',
+  })
 end, { noremap = true, silent = true })
 
 vim.keymap.set('v', '<leader>fg', M.live_grep_project, { noremap = true, silent = true, desc = "Live grep (visual selection)" })
@@ -892,8 +911,167 @@ vim.keymap.set('n', '<C-Left>',  '<C-w><', { desc = "Shrink window width" })
 vim.keymap.set('n', '<C-Right>', '<C-w>>', { desc = "Grow window width" })
 vim.keymap.set('n', '<C-Up>',    '<C-w>+', { desc = "Grow window height" })
 vim.keymap.set('n', '<C-Down>',  '<C-w>-', { desc = "Shrink window height" })
+vim.keymap.set('n', '<C-x>', ':bdelete<CR>', { noremap = true, silent = true, desc = 'Close buffer' })
 vim.keymap.set('n', '<leader>[', ':bprev<CR>', { desc = "Previous buffer" })
 vim.keymap.set('n', '<leader>]', ':bnext<CR>', { desc = "Next buffer" })
+
+-- Bufferline: a reorderable tabline (airline's tabline is disabled below).
+-- ---- persist the drag-order of buffers across restarts, per directory ----
+local bl_order_file = vim.fn.stdpath("state") .. "/bufferline_order.json"
+local bl_saved_index = {}   -- path -> position, for the current working dir
+
+local function bl_read_all()
+  local f = io.open(bl_order_file, "r"); if not f then return {} end
+  local d = f:read("*a"); f:close()
+  local ok, t = pcall(vim.json.decode, d); return (ok and t) or {}
+end
+local function bl_write_all(t)
+  local f = io.open(bl_order_file, "w"); if not f then return end
+  f:write(vim.json.encode(t)); f:close()
+end
+local function bl_refresh_saved()
+  bl_saved_index = {}
+  local paths = bl_read_all()[vim.fn.getcwd()]
+  if paths then for i, p in ipairs(paths) do bl_saved_index[p] = i end end
+end
+bl_refresh_saved()
+
+-- Two colors drive the tab styling (defined once, reused below):
+local bl_dim_bg = "#0c0e13"  -- dimmed tab-bar chrome / inactive tab background
+local bl_dim_fg = "#6b7280"  -- dimmed inactive tab text
+
+require('bufferline').setup {
+  options = {
+    mode = "buffers",
+    separator_style = "thin",        -- default single divider between tabs
+    indicator = { style = "icon", icon = "▎" },  -- colored bar marks the active tab
+    show_buffer_close_icons = true,  -- the little × per buffer
+    show_close_icon = false,         -- no global close button on the far right
+    show_buffer_icons = true,        -- filetype icons via nvim-web-devicons
+    modified_icon = "●",
+    diagnostics = false,
+    always_show_bufferline = true,
+    -- Initial order follows the saved per-dir order; unknown buffers trail by id.
+    -- A manual move (BufferLineMove*) overrides this for the rest of the session.
+    sort_by = function(a, b)
+      local ia, ib = bl_saved_index[a.path], bl_saved_index[b.path]
+      if ia and ib then return ia < ib end
+      if ia then return true end
+      if ib then return false end
+      return a.id < b.id
+    end,
+  },
+  -- Active tab = transparent (blends into the buffer background, no box).
+  -- Everything else = a dim strip (bl_dim_bg) with dim text (bl_dim_fg), so the
+  -- active tab reads as a lit "hole" through an otherwise dimmed bar.
+  highlights = {
+    -- dimmed chrome + inactive tabs
+    fill                 = { bg = bl_dim_bg },
+    background           = { fg = bl_dim_fg, bg = bl_dim_bg },
+    buffer_visible       = { fg = bl_dim_fg, bg = bl_dim_bg },
+    separator            = { fg = bl_dim_bg, bg = bl_dim_bg },
+    separator_visible    = { fg = bl_dim_bg, bg = bl_dim_bg },
+    modified             = { fg = bl_dim_fg, bg = bl_dim_bg },
+    modified_visible     = { fg = bl_dim_fg, bg = bl_dim_bg },
+    close_button         = { fg = bl_dim_fg, bg = bl_dim_bg },
+    close_button_visible = { fg = bl_dim_fg, bg = bl_dim_bg },
+    duplicate            = { fg = bl_dim_fg, bg = bl_dim_bg },
+    duplicate_visible    = { fg = bl_dim_fg, bg = bl_dim_bg },
+    -- active tab: fully transparent, default (bright) foreground
+    buffer_selected       = { bg = "NONE" },
+    separator_selected    = { bg = "NONE" },
+    modified_selected     = { bg = "NONE" },
+    close_button_selected = { bg = "NONE" },
+    duplicate_selected    = { bg = "NONE" },
+    indicator_selected    = { bg = "NONE" },
+  },
+}
+
+-- Save the current visual order (as file paths) on exit, keyed by directory.
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function()
+    local ok, bl = pcall(require, "bufferline"); if not ok then return end
+    local els = bl.get_elements(); els = (els and els.elements) or {}
+    local paths = {}
+    for _, e in ipairs(els) do
+      if e.path and e.path ~= "" then paths[#paths + 1] = e.path end
+    end
+    if #paths == 0 then return end
+    local all = bl_read_all()
+    all[vim.fn.getcwd()] = paths
+    bl_write_all(all)
+  end,
+})
+
+-- Reorder the current buffer left/right within the bufferline.
+vim.keymap.set('n', '<leader><Left>',  ':BufferLineMovePrev<CR>', { silent = true, desc = "Move buffer left in tabline" })
+vim.keymap.set('n', '<leader><Right>', ':BufferLineMoveNext<CR>', { silent = true, desc = "Move buffer right in tabline" })
+
+-- Session persistence (per directory): remember open buffers/tabs/window layout.
+-- What gets saved in a session — buffers, cwd, tabpages, window sizes, etc.
+vim.o.sessionoptions = "buffers,curdir,folds,globals,help,tabpages,terminal,winsize,winpos"
+require('persistence').setup()
+
+-- Auto-restore the session for this directory when launching bare `nvim`
+-- (no file arguments and nothing piped in), so `nvim` in a project drops you
+-- right back where you left off after `:wqa`.
+vim.api.nvim_create_autocmd("VimEnter", {
+  nested = true,
+  callback = function()
+    local no_file_args = vim.fn.argc() == 0
+    local not_piped_in = not vim.g.started_with_stdin
+    if no_file_args and not_piped_in then
+      require('persistence').load()
+      bl_refresh_saved()   -- session restored a cwd; reload its saved tab order
+    end
+  end,
+})
+vim.api.nvim_create_autocmd("StdinReadPre", {
+  callback = function() vim.g.started_with_stdin = true end,
+})
+
+-- Manual session controls if you ever want them.
+vim.keymap.set('n', '<leader>qs', function() require('persistence').load() end, { desc = "Restore session (this dir)" })
+vim.keymap.set('n', '<leader>ql', function() require('persistence').load({ last = true }) end, { desc = "Restore last session" })
+vim.keymap.set('n', '<leader>qd', function() require('persistence').stop() end, { desc = "Stop saving session" })
+
+-- Comment.nvim: treesitter-aware comment toggling (gcc line, gc motion/visual).
+require('Comment').setup()
+
+-- flash.nvim: jump anywhere with labels; also enhances f/t/F/T.
+require('flash').setup()
+vim.keymap.set({ "n", "x", "o" }, "s", function() require("flash").jump() end, { desc = "Flash jump" })
+-- Treesitter select on S in normal/operator only (visual S is left to nvim-surround).
+vim.keymap.set({ "n", "o" }, "S", function() require("flash").treesitter() end, { desc = "Flash treesitter" })
+
+-- nvim-autopairs: auto-close brackets/quotes, integrated with nvim-cmp.
+require('nvim-autopairs').setup {}
+do
+  local ok_cmp, cmp = pcall(require, 'cmp')
+  local ok_ap, cmp_ap = pcall(require, 'nvim-autopairs.completion.cmp')
+  if ok_cmp and ok_ap then
+    cmp.event:on('confirm_done', cmp_ap.on_confirm_done())
+  end
+end
+
+-- indent-blankline (ibl): vertical box-drawing indent guides + current scope.
+require('ibl').setup {
+  indent = { char = "│" },
+  scope = { enabled = true },
+}
+
+-- nvim-surround: add/change/delete surrounds (ys/cs/ds, visual S).
+require('nvim-surround').setup {}
+
+-- trouble.nvim: aggregated diagnostics/quickfix panel (complements inline LSP).
+require('trouble').setup {}
+vim.keymap.set('n', '<leader>xx', '<cmd>Trouble diagnostics toggle<cr>',              { desc = "Diagnostics (Trouble)" })
+vim.keymap.set('n', '<leader>xX', '<cmd>Trouble diagnostics toggle filter.buf=0<cr>', { desc = "Buffer diagnostics (Trouble)" })
+vim.keymap.set('n', '<leader>xq', '<cmd>Trouble qflist toggle<cr>',                    { desc = "Quickfix list (Trouble)" })
+
+-- Summon the full which-key hint list for the current mode (all first keys,
+-- not just <leader>). Pressing <leader> alone already shows the leader menu.
+vim.keymap.set('n', '<leader>?', function() require('which-key').show({ global = true }) end, { desc = "Show all keybinds (which-key)" })
 
 vim.api.nvim_create_autocmd({"InsertEnter", "InsertLeave", "BufEnter"}, {
   callback = function()
@@ -987,6 +1165,14 @@ nnoremap <leader>fh <cmd>lua require('telescope.builtin').help_tags({
             \ cwd = vim.fn.systemlist("git rev-parse --show-toplevel")[1]
             \ })<cr>
 
+for s:i in range(1, 9)
+    execute 'nnoremap <silent> <leader>' . s:i .
+        \ ' :let g:bufs = getbufinfo({"buflisted": 1}) \|' .
+        \ ' if len(g:bufs) >= ' . s:i .
+        \ ' \| execute "buffer " . g:bufs[' . (s:i - 1) . ']["bufnr"]' .
+        \ ' \| endif<CR>'
+endfor
+
 autocmd BufReadPost *
      \ if line("'\"") > 0 && line("'\"") <= line("$") |
      \   exe "normal! g`\"" |
@@ -1004,7 +1190,8 @@ endfunction
 let g:airline_powerline_fonts = 1
 let g:webdevicons_enable_airline_tabline = 1
 let g:webdevicons_enable_airline_statusline = 1
-let g:airline#extensions#tabline#enabled = 1
+" Tabline is handled by bufferline.nvim (see setup below), so disable airline's.
+let g:airline#extensions#tabline#enabled = 0
 let g:airline#extensions#tabline#formatter = 'default'
 let g:airline_theme = 'base16_material_darker'
 let g:powerline_pycmd = 'python3'
@@ -1013,6 +1200,7 @@ let g:airline_section_c = ''
 
 call airline#parts#define_function('airline_weather', 'AirlineWeather')
 let g:airline_section_x = airline#section#create_right(['airline_weather'])
+
 
 autocmd User AirlineAfterInit call s:SetupCopilotSection()
 function! s:SetupCopilotSection()
@@ -1043,6 +1231,8 @@ command! Wq wq
 command! WQ wq
 command! W w
 command! Q q
+
+set shada=!,'100,<1000,s100,h
 
 "
 "let g:neoformat_verilog_verible = {
