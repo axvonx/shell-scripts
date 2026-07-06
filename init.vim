@@ -4,6 +4,7 @@
 " ║  Plugins ............ vim-plug plugin list                                 ║
 " ║  Early setup ........ airline boot, filetype, mapleader                    ║
 " ║  Copilot ............ copilot.lua + suggestion keymaps                     ║
+" ║  ClaudeCode ......... claudecode.nvim CLI bridge + <leader>C keymaps        ║
 " ║  Completion ......... nvim-cmp mappings                                    ║
 " ║  Todo-comments                                                             ║
 " ║  Treesitter                                                                ║
@@ -32,30 +33,21 @@ Plug 'nvim-telescope/telescope-frecency.nvim'
 Plug 'folke/which-key.nvim'
 Plug 'stevearc/stickybuf.nvim'
 Plug 'zbirenbaum/copilot.lua'
+Plug 'coder/claudecode.nvim'
 Plug 'tpope/vim-sensible'
 Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
 Plug 'vim-airline/vim-airline'
-Plug 'powerline/powerline'
 Plug 'ryanoasis/vim-devicons'
 Plug 'vim-airline/vim-airline-themes'
-Plug 'whonore/Coqtail'
-Plug 'morhetz/gruvbox'
-Plug 'joshdick/onedark.vim'
-Plug 'dracula/vim'
-Plug 'sainnhe/everforest'
-Plug 'folke/tokyonight.nvim'
 Plug 'neovim/nvim-lspconfig'
 Plug 'hrsh7th/nvim-cmp'
 Plug 'hrsh7th/cmp-nvim-lsp'
 Plug 'hrsh7th/cmp-buffer'
 Plug 'hrsh7th/cmp-path'
-Plug 'hrsh7th/cmp-cmdline'
 Plug 'preservim/nerdtree'
-Plug 'navarasu/onedark.nvim'
 Plug 'scottmckendry/cyberdream.nvim'
 Plug 'sbdchd/neoformat'
 Plug 'wakatime/vim-wakatime'
-Plug 'Mofiqul/vscode.nvim'
 Plug 'lewis6991/satellite.nvim'
 Plug 'nvim-telescope/telescope.nvim'
 Plug 'nvim-telescope/telescope-fzf-native.nvim', { 'do': 'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release' }
@@ -63,8 +55,6 @@ Plug 'nvim-lua/plenary.nvim'
 Plug 'lewis6991/gitsigns.nvim'
 Plug 'stevearc/aerial.nvim'
 Plug 'mrcjkb/rustaceanvim'
-Plug 'Scysta/pink-panic.nvim'
-Plug 'rktjmp/lush.nvim'
 Plug 'folke/todo-comments.nvim'
 Plug 'nvim-tree/nvim-web-devicons'
 Plug 'akinsho/bufferline.nvim', { 'tag': '*' }
@@ -203,6 +193,21 @@ vim.api.nvim_create_autocmd({ "InsertEnter", "CursorMovedI", "TextChangedI" }, {
   end,
 })
 
+-- ═══════════════════════════ SECTION: ClaudeCode ═══════════════════════════
+-- Runs the Claude Code CLI in a split, wired over the same protocol as the
+-- official editor extensions. Selection-aware: visually select, <leader>Cs, and
+-- the range is sent as an @-mention so Claude sees exactly what the cursor is on.
+require("claudecode").setup({})
+
+vim.keymap.set('n', '<leader>Cc', '<cmd>ClaudeCode<CR>',          { desc = "Toggle Claude" })
+vim.keymap.set('n', '<leader>Cf', '<cmd>ClaudeCodeFocus<CR>',    { desc = "Focus Claude window" })
+vim.keymap.set('n', '<leader>Cr', '<cmd>ClaudeCode --resume<CR>',   { desc = "Resume a past session" })
+vim.keymap.set('n', '<leader>CC', '<cmd>ClaudeCode --continue<CR>', { desc = "Continue last session" })
+vim.keymap.set('n', '<leader>Cb', '<cmd>ClaudeCodeAdd %<CR>',    { desc = "Add current buffer to context" })
+vim.keymap.set({ 'n', 'v' }, '<leader>Cs', '<cmd>ClaudeCodeSend<CR>', { desc = "Send selection / cursor context" })
+vim.keymap.set('n', '<leader>Ca', '<cmd>ClaudeCodeDiffAccept<CR>',    { desc = "Accept proposed diff" })
+vim.keymap.set('n', '<leader>Cd', '<cmd>ClaudeCodeDiffDeny<CR>',      { desc = "Reject proposed diff" })
+
 -- ═══════════════════════════ SECTION: Todo-comments ═══════════════════════════
 require("todo-comments").setup {
   signs = true,
@@ -244,13 +249,150 @@ require('nvim-treesitter').setup {
   },
 }
 
-vim.api.nvim_create_autocmd("BufReadPost", {
-  callback = function()
+vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
+  callback = function(args)
+    -- Bind to args.buf, not the current buffer: LSP renames load the changed
+    -- files as *background* buffers, so by the time this scheduled callback runs
+    -- the current buffer is still the original. Without the explicit bufnr,
+    -- vim.treesitter.start() would target the wrong buffer and the renamed files
+    -- would open with no highlighting (BufReadPost won't fire again for them).
     vim.schedule(function()
-      pcall(vim.treesitter.start)
+      pcall(vim.treesitter.start, args.buf)
     end)
   end,
 })
+
+-- ═══════════════════════════ SECTION: Structural select ═══════════════════════════
+-- Treesitter-driven visual selection biased toward whole structures, not tokens.
+--   S     (normal)  → select the nearest enclosing STRUCTURAL node (struct/fn/block/if/loop)
+--   gs    (normal)  → select the exact smallest node under the cursor (literal fallback)
+--   <Tab> (visual)  → grow to the next structural ancestor
+--   <S-Tab> (visual)→ shrink back down the remembered stack
+-- nvim-treesitter's main branch dropped the incremental_selection module, so this is
+-- hand-rolled on the core vim.treesitter API.
+local ts_sel = {}
+
+-- A node counts as a "structure" if it is a named node spanning more than one
+-- line — i.e. it has a body (function, struct, block, if/loop, table, class...).
+-- Language-agnostic: works for any grammar treesitter can parse, with no
+-- per-language node-type list to maintain.
+local function is_structural(node)
+  if not node:named() then return false end
+  local sr, _, er, _ = node:range()
+  return er > sr
+end
+
+-- Per-window shrink stack: previous ranges to fall back to on <S-Tab>.
+local ts_stacks = {}
+
+local function clampcol(row, col)
+  local line = vim.api.nvim_buf_get_lines(0, row, row + 1, false)[1] or ""
+  return math.max(math.min(col, #line), 0)
+end
+
+local function node_range(node)
+  local sr, sc, er, ec = node:range()
+  return { sr, sc, er, ec }  -- end-exclusive, 0-based
+end
+
+-- Visually select an end-exclusive range; converts to charwise-inclusive for vim.
+local function select_range(r)
+  if vim.fn.mode():match("[vV\022]") then
+    vim.cmd("normal! " .. vim.api.nvim_replace_termcodes("<Esc>", true, false, true))
+  end
+  local sr, sc, er, ec = r[1], r[2], r[3], r[4]
+  if ec == 0 and er > sr then
+    er = er - 1
+    local line = vim.api.nvim_buf_get_lines(0, er, er + 1, false)[1] or ""
+    ec = math.max(#line - 1, 0)
+  else
+    ec = math.max(ec - 1, 0)
+  end
+  vim.api.nvim_win_set_cursor(0, { sr + 1, clampcol(sr, sc) })
+  vim.cmd("normal! v")
+  vim.api.nvim_win_set_cursor(0, { er + 1, clampcol(er, ec) })
+end
+
+-- Current visual selection as an end-exclusive range (call while still in visual mode).
+local function current_visual_range()
+  local s = vim.fn.getpos("v")
+  local e = vim.fn.getpos(".")
+  local sr, sc = s[2] - 1, clampcol(s[2] - 1, s[3] - 1)
+  local er, ec = e[2] - 1, clampcol(e[2] - 1, e[3] - 1)
+  if sr > er or (sr == er and sc > ec) then sr, sc, er, ec = er, ec, sr, sc end
+  return { sr, sc, er, ec + 1 }
+end
+
+local function le(ar, ac, br, bc) return ar < br or (ar == br and ac <= bc) end
+
+-- outer strictly contains inner (both end-exclusive)
+local function contains_larger(outer, inner)
+  local same = outer[1] == inner[1] and outer[2] == inner[2]
+    and outer[3] == inner[3] and outer[4] == inner[4]
+  return not same
+    and le(outer[1], outer[2], inner[1], inner[2])
+    and le(inner[3], inner[4], outer[3], outer[4])
+end
+
+-- Nearest structural ancestor strictly containing `base`.
+local function structural_from(base)
+  local node = vim.treesitter.get_node({ pos = { base[1], base[2] } })
+  while node do
+    if is_structural(node) and contains_larger(node_range(node), base) then
+      return node_range(node)
+    end
+    node = node:parent()
+  end
+  return nil
+end
+
+function ts_sel.smart()
+  local win = vim.api.nvim_get_current_win()
+  local base, fresh
+  if vim.fn.mode():match("[vV\022]") then
+    base, fresh = current_visual_range(), false
+  else
+    local cur = vim.api.nvim_win_get_cursor(0)
+    base, fresh = { cur[1] - 1, cur[2], cur[1] - 1, cur[2] }, true
+  end
+  local nr = structural_from(base)
+  if not nr then  -- no structural ancestor (odd langs): just go one node up
+    local node = vim.treesitter.get_node({ pos = { base[1], base[2] } })
+    if node and node:parent() then nr = node_range(node:parent())
+    elseif node then nr = node_range(node) end
+  end
+  if not nr then return end
+  if fresh then ts_stacks[win] = {} end
+  ts_stacks[win] = ts_stacks[win] or {}
+  table.insert(ts_stacks[win], base)
+  select_range(nr)
+end
+
+function ts_sel.literal()
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local node = vim.treesitter.get_node({ pos = { cur[1] - 1, cur[2] } })
+  if not node then return end
+  ts_stacks[vim.api.nvim_get_current_win()] =
+    { { cur[1] - 1, cur[2], cur[1] - 1, cur[2] } }
+  select_range(node_range(node))
+end
+
+function ts_sel.shrink()
+  local st = ts_stacks[vim.api.nvim_get_current_win()]
+  if not st or #st == 0 then return end
+  local prev = table.remove(st)
+  if prev[1] == prev[3] and prev[2] == prev[4] then  -- back to a bare cursor: exit visual
+    vim.cmd("normal! " .. vim.api.nvim_replace_termcodes("<Esc>", true, false, true))
+    vim.api.nvim_win_set_cursor(0, { prev[1] + 1, clampcol(prev[1], prev[2]) })
+  else
+    select_range(prev)
+  end
+end
+
+vim.keymap.set("n", "S", ts_sel.smart,           { silent = true, desc = "Select structure (smart)" })
+vim.keymap.set("n", "gs", ts_sel.literal,        { silent = true, desc = "Select node under cursor (literal)" })
+vim.keymap.set("x", "<Tab>", ts_sel.smart,       { silent = true, desc = "Grow structural selection" })
+vim.keymap.set("x", "<S-Tab>", ts_sel.shrink,    { silent = true, desc = "Shrink structural selection" })
 
 -- ═══════════════════════════ SECTION: Aerial (symbols) ═══════════════════════════
 require('aerial').setup({
@@ -306,7 +448,9 @@ vim.lsp.config("clangd", {
     },
     capabilities = cmp_lsp.default_capabilities(),
     on_attach = function(client, bufnr)
-        cmp.setup.buffer {
+        -- require here: the `local cmp` below is declared later in this chunk, so
+        -- referencing it directly would resolve to the (nil) global and error.
+        require('cmp').setup.buffer {
             sources = {
                 { name = 'nvim_lsp', max_item_count = 15 },
             }
@@ -472,6 +616,18 @@ wk.add({
   { "<leader>x", group = "trouble/diagnostics" },
   { "<leader>o", group = "overseer/tasks" },
   { "<leader>c", group = "cmake" },
+  { "<leader>C", group = "claude" },
+  { "<leader>Cs", desc = "Send selection / cursor context", mode = "v" },
+  { "<leader>fs", desc = "LSP: symbol by name (project)" },
+  { "<leader>fd", desc = "LSP: definitions" },
+  { "<leader>fr", desc = "LSP: references (usages)" },
+  { "<leader>ft", desc = "LSP: type definition" },
+  { "<leader>fc", desc = "LSP: incoming calls (callers)" },
+  { "<leader>fC", desc = "LSP: outgoing calls (callees)" },
+  { "S", desc = "Select structure (smart)" },
+  { "gs", desc = "Select node under cursor (literal)" },
+  { "<Tab>", desc = "Grow structural selection", mode = "x" },
+  { "<S-Tab>", desc = "Shrink structural selection", mode = "x" },
   { "<leader>b", desc = "CMake build" },
   { "<leader>?", desc = "Show all keybinds" },
   { "<leader>g", desc = "NERDTree: find current file" },
@@ -888,6 +1044,25 @@ vim.api.nvim_create_autocmd("ModeChanged", {
   end,
 })
 
+-- Telescope: load fzf-native so filename matching uses smart-case. Without this
+-- the built-in fzy sorter is always case-insensitive, so "CMake" and "cmake" both
+-- match CMakeLists.txt. With smart_case, a lowercase query stays case-insensitive
+-- but any uppercase letter makes the match case-sensitive.
+local ok_telescope, telescope_mod = pcall(require, "telescope")
+if ok_telescope then
+  telescope_mod.setup({
+    extensions = {
+      fzf = {
+        fuzzy = true,
+        override_generic_sorter = true,
+        override_file_sorter = true,
+        case_mode = "smart_case",
+      },
+    },
+  })
+  pcall(telescope_mod.load_extension, "fzf")
+end
+
 local M = {}
 
 local has_telescope, telescope = pcall(require, "telescope.builtin")
@@ -941,6 +1116,17 @@ end, { noremap = true, silent = true })
 
 vim.keymap.set('v', '<leader>fg', M.live_grep_project, { noremap = true, silent = true, desc = "Live grep (visual selection)" })
 vim.keymap.set('n', '<leader>fg', M.live_grep_project, { noremap = true, silent = true, desc = "Live grep project" })
+
+-- LSP semantic search (clangd's project index, not raw text) — one picker per intent.
+-- <leader>fs is the "grep, but symbols only" analog to <leader>fg: type a name, get
+-- every matching symbol project-wide, tagged by kind, never a comment.
+vim.keymap.set('n', '<leader>fs', telescope.lsp_dynamic_workspace_symbols, { desc = "LSP: symbol by name (project)" })
+vim.keymap.set('n', '<leader>fd', telescope.lsp_definitions,               { desc = "LSP: definitions" })
+vim.keymap.set('n', '<leader>fr', telescope.lsp_references,                { desc = "LSP: references (usages)" })
+vim.keymap.set('n', '<leader>ft', telescope.lsp_type_definitions,          { desc = "LSP: type definition" })
+vim.keymap.set('n', '<leader>fc', telescope.lsp_incoming_calls,            { desc = "LSP: incoming calls (callers)" })
+vim.keymap.set('n', '<leader>fC', telescope.lsp_outgoing_calls,            { desc = "LSP: outgoing calls (callees)" })
+
 vim.keymap.set('n', '<C-h>', '<C-w>h', { desc = "Move to left window" })
 vim.keymap.set('n', '<C-l>', '<C-w>l', { desc = "Move to right window" })
 vim.keymap.set('n', '<C-j>', '<C-w>j', { desc = "Move to window below" })
@@ -950,8 +1136,10 @@ vim.keymap.set('n', '<C-Right>', '<C-w>>', { desc = "Grow window width" })
 vim.keymap.set('n', '<C-Up>',    '<C-w>+', { desc = "Grow window height" })
 vim.keymap.set('n', '<C-Down>',  '<C-w>-', { desc = "Shrink window height" })
 vim.keymap.set('n', '<C-x>', ':bdelete<CR>', { noremap = true, silent = true, desc = 'Close buffer' })
-vim.keymap.set('n', '<leader>[', ':bprev<CR>', { desc = "Previous buffer" })
-vim.keymap.set('n', '<leader>]', ':bnext<CR>', { desc = "Next buffer" })
+-- Cycle by the bufferline's *visual* order (respects drag-reorder + persisted
+-- order), not buffer-number order like :bprev/:bnext would.
+vim.keymap.set('n', '<leader>[', ':BufferLineCyclePrev<CR>', { silent = true, desc = "Previous buffer" })
+vim.keymap.set('n', '<leader>]', ':BufferLineCycleNext<CR>', { silent = true, desc = "Next buffer" })
 
 -- ═══════════════════════════ SECTION: Bufferline (tabs) ═══════════════════════════
 -- Bufferline: a reorderable tabline (airline's tabline is disabled below).
@@ -1055,25 +1243,111 @@ require('persistence').setup()
 -- Auto-restore the session for this directory when launching bare `nvim`
 -- (no file arguments and nothing piped in), so `nvim` in a project drops you
 -- right back where you left off after `:wqa`.
+-- git launches nvim to edit an ephemeral file (commit/merge/tag message,
+-- interactive-rebase todo). Those live in .git/ and must never be restored
+-- into — or baked into — a project session, or a stale COMMIT_EDITMSG buffer
+-- reappears on the next bare `nvim` in the repo. persistence's own gitcommit
+-- awareness only gates the `need` threshold; mks! still writes the buffer.
+local git_edit_files = {
+  ["COMMIT_EDITMSG"] = true, ["MERGE_MSG"] = true, ["SQUASH_MSG"] = true,
+  ["TAG_EDITMSG"] = true, ["NOTES_EDITMSG"] = true, ["git-rebase-todo"] = true,
+}
+local function launched_for_git_edit()
+  for _, a in ipairs(vim.fn.argv()) do
+    if git_edit_files[vim.fn.fnamemodify(a, ":t")] then return true end
+  end
+  return false
+end
+
 vim.api.nvim_create_autocmd("VimEnter", {
   nested = true,
   callback = function()
-    local no_file_args = vim.fn.argc() == 0
     local not_piped_in = not vim.g.started_with_stdin
-    if no_file_args and not_piped_in then
-      require('persistence').load()
-      bl_refresh_saved()   -- session restored a cwd; reload its saved tab order
+    if not not_piped_in then return end
+
+    local persistence = require('persistence')
+
+    -- Editing a git message: don't load a session over it, don't save it back.
+    if launched_for_git_edit() then
+      persistence.stop()
+      return
     end
+
+    if vim.fn.argc() == 0 then
+      -- Bare `nvim`: drop right back where you left off.
+      persistence.load()
+      bl_refresh_saved()   -- session restored a cwd; reload its saved tab order
+      return
+    end
+
+    -- `nvim <file>` with a saved session for this dir: don't let persistence
+    -- overwrite the session with just this file on exit. Restore the existing
+    -- session first, then append the launched file(s) to it and surface them.
+    local session_file = persistence.current()
+    if not (session_file and vim.fn.filereadable(session_file) == 1) then
+      return   -- no session yet: leave the fresh file(s) to seed a new one
+    end
+
+    -- Absolute paths captured before load() resets the arglist/cwd.
+    local files = {}
+    for _, a in ipairs(vim.fn.argv()) do
+      files[#files + 1] = vim.fn.fnamemodify(a, ":p")
+    end
+
+    persistence.load()
+    bl_refresh_saved()
+
+    for _, f in ipairs(files) do
+      vim.cmd("badd " .. vim.fn.fnameescape(f))   -- join the session's buffer list
+    end
+    vim.cmd("edit " .. vim.fn.fnameescape(files[1]))   -- show what you opened nvim for
   end,
 })
 vim.api.nvim_create_autocmd("StdinReadPre", {
   callback = function() vim.g.started_with_stdin = true end,
 })
 
+-- Keep the on-disk session in sync the moment you close a buffer.
+-- persistence only re-saves on a *clean* VimLeavePre, so a `:bd` is otherwise
+-- lost if nvim exits uncleanly (terminal tab closed, shell exited, process
+-- killed) and the deleted buffer reappears on next launch. Re-saving on
+-- BufDelete makes a close durable right away — no need to nuke the session.
+vim.api.nvim_create_autocmd("BufDelete", {
+  group = vim.api.nvim_create_augroup("persistence_sync", { clear = true }),
+  callback = function()
+    -- Don't save while a session is being sourced (restore wipes a scratch
+    -- buffer, which fires BufDelete) or when persistence isn't active.
+    if vim.g.SessionLoad == 1 then return end
+    local persistence = require('persistence')
+    if not persistence.active() then return end
+    -- Defer so the buffer is fully off the list before mksession snapshots it.
+    vim.schedule(function() persistence.save() end)
+  end,
+})
+
 -- Manual session controls if you ever want them.
 vim.keymap.set('n', '<leader>qs', function() require('persistence').load() end, { desc = "Restore session (this dir)" })
 vim.keymap.set('n', '<leader>ql', function() require('persistence').load({ last = true }) end, { desc = "Restore last session" })
 vim.keymap.set('n', '<leader>qd', function() require('persistence').stop() end, { desc = "Stop saving session" })
+
+-- Nuke this directory's saved session and stop saving for the rest of this run.
+-- Use when a stray buffer got baked into the session and keeps re-opening:
+-- .stop() is essential — otherwise persistence would just re-save on exit.
+vim.keymap.set('n', '<leader>qD', function()
+  local persistence = require('persistence')
+  persistence.stop()
+  local removed = {}
+  for _, f in ipairs({ persistence.current(), persistence.current({ branch = false }) }) do
+    if vim.fn.filereadable(f) == 1 and vim.fn.delete(f) == 0 then
+      table.insert(removed, f)
+    end
+  end
+  if #removed > 0 then
+    vim.notify("Deleted session (saving stopped for this run):\n" .. table.concat(removed, "\n"), vim.log.levels.INFO)
+  else
+    vim.notify("No session file found for this directory.", vim.log.levels.WARN)
+  end
+end, { desc = "Delete session (this dir) + stop saving" })
 
 -- ═══════════════════════════ SECTION: Editing (comment/flash/pairs/indent/surround) ═══════════════════════════
 -- Comment.nvim: treesitter-aware comment toggling (gcc line, gc motion/visual).
@@ -1082,8 +1356,8 @@ require('Comment').setup()
 -- flash.nvim: jump anywhere with labels; also enhances f/t/F/T.
 require('flash').setup()
 vim.keymap.set({ "n", "x", "o" }, "s", function() require("flash").jump() end, { desc = "Flash jump" })
--- Treesitter select on S in normal/operator only (visual S is left to nvim-surround).
-vim.keymap.set({ "n", "o" }, "S", function() require("flash").treesitter() end, { desc = "Flash treesitter" })
+-- S is repurposed for structural select (see SECTION: Structural select). flash.treesitter
+-- is still available if you want it back on another key: require("flash").treesitter().
 
 -- nvim-autopairs: auto-close brackets/quotes, integrated with nvim-cmp.
 require('nvim-autopairs').setup {}
@@ -1286,7 +1560,6 @@ let g:webdevicons_enable_airline_statusline = 1
 let g:airline#extensions#tabline#enabled = 0
 let g:airline#extensions#tabline#formatter = 'default'
 let g:airline_theme = 'base16_material_darker'
-let g:powerline_pycmd = 'python3'
 let g:airline_skip_empty_sections = 1
 let g:airline_section_c = ''
 
@@ -1309,6 +1582,8 @@ set laststatus=2
 set termguicolors
 set number
 set relativenumber
+set ignorecase   " case-insensitive search / telescope-frecency matching...
+set smartcase    " ...unless the query has uppercase (fixes CMake not matching CMakeLists.txt)
 set signcolumn=yes
 set tabstop=4
 set shiftwidth=4
